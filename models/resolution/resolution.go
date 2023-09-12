@@ -393,8 +393,6 @@ func (r *Resolution) Update(dbp zesty.DBProvider) (err error) {
 		return err
 	}
 
-	dst := make([]byte, hex.EncodedLen(len(compressedSteps)))
-	hex.Encode(dst, compressedSteps)
 	encryptedSteps, err := models.EncryptionKey.Encrypt(compressedSteps, []byte(r.PublicID))
 	if err != nil {
 		return err
