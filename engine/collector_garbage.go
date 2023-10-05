@@ -5,9 +5,11 @@ import (
 	"log"
 	"time"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/loopfz/gadgeto/zesty"
 	"github.com/ovh/utask"
 	"github.com/ovh/utask/db/pgjuju"
+	"github.com/ovh/utask/db/sqlgenerator"
 	"github.com/ovh/utask/models/task"
 	"github.com/ovh/utask/pkg/now"
 )
@@ -86,17 +88,17 @@ func GarbageCollector(ctx context.Context, completedTaskExpiration string) error
 
 // cascade delete task comments and task resolution
 func deleteOldTasks(dbp zesty.DBProvider, perishedThreshold time.Duration) error {
-	sqlStmt := `DELETE FROM "task"
-		WHERE "task".state IN ($1,$2,$3)
-		AND   "task".last_activity < $4`
-
-	if _, err := dbp.DB().Exec(sqlStmt,
+	query, params, err := sqlgenerator.PGsql.
+		Delete(`"task" t`).
 		// final task states, cannot run anymore
-		task.StateDone,
-		task.StateCancelled,
-		task.StateWontfix,
-		now.Get().Add(-perishedThreshold),
-	); err != nil {
+		Where(squirrel.Eq{"t.state": []string{task.StateDone, task.StateCancelled, task.StateWontfix}}).
+		Where(squirrel.Lt{"t.last_activity": now.Get().Add(-perishedThreshold)}).
+		ToSql()
+	if err != nil {
+		return err
+	}
+
+	if _, err := dbp.DB().Exec(query, params...); err != nil {
 		return pgjuju.Interpret(err)
 	}
 
