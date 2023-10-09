@@ -20,7 +20,6 @@ import (
 
 	"github.com/ovh/utask"
 	"github.com/ovh/utask/engine/step"
-	"github.com/ovh/utask/engine/step/condition"
 	"github.com/ovh/utask/engine/values"
 	"github.com/ovh/utask/models/resolution"
 	"github.com/ovh/utask/models/runnerinstance"
@@ -670,8 +669,7 @@ func runAvailableSteps(dbp zesty.DBProvider, modifiedSteps map[string]bool, res 
 				switch s.State {
 				case step.StateTODO:
 					expanded++
-					expandStep(s, res)
-					expandedSteps = append(expandedSteps, s.ChildrenSteps...)
+					expandedSteps = append(expandedSteps, expandStep(s, res)...)
 				case step.StateToRetry:
 					// attempt contracting step, clean up any children steps
 					// any available children have been ignored by availableSteps()
@@ -680,8 +678,7 @@ func runAvailableSteps(dbp zesty.DBProvider, modifiedSteps map[string]bool, res 
 						s.Output = nil
 					} else {
 						expanded++
-						expandStep(s, res)
-						expandedSteps = append(expandedSteps, s.ChildrenSteps...)
+						expandedSteps = append(expandedSteps, expandStep(s, res)...)
 					}
 				case step.StateExpanded:
 					contractStep(s, res)
@@ -736,80 +733,43 @@ func runAvailableSteps(dbp zesty.DBProvider, modifiedSteps map[string]bool, res 
 	return len(av)
 }
 
-func expandStep(s *step.Step, res *resolution.Resolution) {
+func expandStep(s *step.Step, res *resolution.Resolution) []string {
 	foreach, err := res.Values.Apply(s.ForEach, nil, "")
 	if err != nil {
 		res.SetStepState(s.Name, step.StateFatalError)
 		s.Error = err.Error()
-		return
+		return nil
 	}
 	// unmarshal into collection
 	var items []interface{}
 	if err := utils.JSONnumberUnmarshal(bytes.NewReader(foreach), &items); err != nil {
 		res.SetStepState(s.Name, step.StateFatalError)
 		s.Error = err.Error()
-		return
+		return nil
 	}
 
-	var previousChildStepName string
-	// generate all children steps
-	for i, item := range items {
-		childStepName := fmt.Sprintf("%s-%d", s.Name, i)
-
-		// copy all slices from the parent step to prevent array pointer
-		// to be shared between multiple steps
-		dependencies := make([]string, len(s.Dependencies))
-		customStates := make([]string, len(s.CustomStates))
-		resources := make([]string, len(s.Resources))
-		conditions := []*condition.Condition{}
-
-		copy(dependencies, s.Dependencies)
-		copy(customStates, s.CustomStates)
-		copy(resources, s.Resources)
-		for _, c := range s.Conditions {
-			// Only copy skip conditions that are flagged with foreach: children
-			if c.Type == condition.SKIP && c.ForEach != condition.ForEachChildren {
-				continue
-			}
-			conditions = append(conditions, c)
-		}
-
-		res.Steps[childStepName] = &step.Step{
-			Name:         childStepName,
-			Description:  fmt.Sprintf("%d - %s", i, s.Description),
-			Idempotent:   s.Idempotent,
-			Action:       s.Action,
-			Schema:       s.Schema,
-			State:        step.StateTODO,
-			RetryPattern: s.RetryPattern,
-			MaxRetries:   s.MaxRetries,
-			Dependencies: dependencies,
-			CustomStates: customStates,
-			Conditions:   conditions,
-			Resources:    resources,
-			Item:         item,
-		}
-
-		if s.ForEachStrategy == step.ForEachStrategySequence {
-			if previousChildStepName != "" {
-				res.Steps[childStepName].Dependencies = append(res.Steps[childStepName].Dependencies, previousChildStepName)
-			}
-
-			previousChildStepName = childStepName
-		}
-
-		delete(res.ForeachChildrenAlreadyContracted, childStepName)
-	}
-	// update parent dependencies to wait on children
 	s.ChildrenSteps = []string{}
 	s.ChildrenStepMap = map[string]bool{}
-	for i := range items {
-		childStepName := fmt.Sprintf("%s-%d", s.Name, i)
-		s.Dependencies = append(s.Dependencies, childStepName+":ANY")
-		s.ChildrenSteps = append(s.ChildrenSteps, childStepName)
-		s.ChildrenStepMap[childStepName] = true
+	childrenNames := make([]string, 0, len(items))
+
+	// generate all children steps
+	for i, item := range items {
+		childName := fmt.Sprintf("%s-%d", s.Name, i)
+		childDescription := fmt.Sprintf("%d - %s", i, s.Description)
+
+		child := step.FromParent(s, childName, childDescription, item)
+		childrenNames = append(childrenNames, childName)
+		res.Steps[childName] = child
+
+		if s.ForEachStrategy == step.ForEachStrategySequence && i > 0 {
+			child.Dependencies = append(child.Dependencies, childrenNames[i-1])
+		}
+
+		delete(res.ForeachChildrenAlreadyContracted, childName)
 	}
 	res.SetStepState(s.Name, step.StateExpanded)
+
+	return childrenNames
 }
 
 func contractStep(s *step.Step, res *resolution.Resolution) {

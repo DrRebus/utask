@@ -149,6 +149,44 @@ func uniqueSortedList(s []string) []string {
 	return ret
 }
 
+func FromParent(parent *Step, name, description string, item any) *Step {
+	child := &Step{
+		Name:         name,
+		Description:  description,
+		Idempotent:   parent.Idempotent,
+		Action:       parent.Action,
+		Schema:       parent.Schema,
+		State:        StateTODO,
+		RetryPattern: parent.RetryPattern,
+		MaxRetries:   parent.MaxRetries,
+		Dependencies: make([]string, len(parent.Dependencies)),
+		CustomStates: make([]string, len(parent.CustomStates)),
+		Conditions:   []*condition.Condition{},
+		Resources:    make([]string, len(parent.Resources)),
+		Item:         item,
+	}
+
+	// copy all slices from the parent step to prevent array pointer
+	// to be shared between multiple steps
+	copy(child.Dependencies, parent.Dependencies)
+	copy(child.CustomStates, parent.CustomStates)
+	copy(child.Resources, parent.Resources)
+
+	for _, c := range parent.Conditions {
+		// Only copy skip conditions that are flagged with foreach: children
+		if c.Type != condition.SKIP || c.ForEach == condition.ForEachChildren {
+			child.Conditions = append(child.Conditions, c)
+		}
+	}
+
+	// update parent dependencies to wait on children
+	parent.Dependencies = append(parent.Dependencies, name+":ANY")
+	parent.ChildrenSteps = append(parent.ChildrenSteps, name)
+	parent.ChildrenStepMap[name] = true
+
+	return child
+}
+
 type execution struct {
 	baseCfgRaw  json.RawMessage
 	outputs     []*executor.Output
