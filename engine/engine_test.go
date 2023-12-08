@@ -1398,7 +1398,7 @@ func TestBatch(t *testing.T) {
 		batchStepMetadataRaw, ok := res.Steps[batchStepName].Metadata.(string)
 		assert.True(t, ok, "wrong type of metadata for step '%s'", batchStepName)
 
-		assert.Nil(t, res.Steps[batchStepName].Output, "output nil for step '%s'", batchStepName)
+		assert.Equal(t, "null", res.Steps[batchStepName].Output, "output null for step '%s'", batchStepName)
 
 		// The plugin formats Metadata in a special way that we need to revert before unmarshalling them
 		batchStepMetadataRaw = strings.ReplaceAll(batchStepMetadataRaw, `\"`, `"`)
@@ -1477,4 +1477,17 @@ func TestBatch(t *testing.T) {
 
 	}
 	assert.Equal(t, resolution.StateDone, res.State)
+
+	res, err = resolution.LoadFromPublicID(dbp, res.PublicID)
+	require.Nil(t, err)
+
+	// Making sure results are properly gathered
+	for _, batchStepName := range []string{"batchJsonInputs", "batchYamlInputs"} {
+		outputs, ok := res.Steps[batchStepName].Output.([]any)
+		require.True(t, ok, "wrong type of outputs for step '%s'", batchStepName)
+		assert.Len(t, outputs, 2)
+		for _, output := range outputs {
+			assert.IsType(t, map[string]any{}, output)
+		}
+	}
 }

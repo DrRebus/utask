@@ -9,12 +9,14 @@ import (
 	"github.com/loopfz/gadgeto/zesty"
 	"github.com/ovh/configstore"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ovh/utask"
 	"github.com/ovh/utask/db"
 	"github.com/ovh/utask/engine/input"
 	"github.com/ovh/utask/engine/step"
 	"github.com/ovh/utask/engine/step/executor"
+	"github.com/ovh/utask/engine/values"
 	"github.com/ovh/utask/models/task"
 	"github.com/ovh/utask/models/tasktemplate"
 )
@@ -59,6 +61,35 @@ func TestRunningTasks(t *testing.T) {
 	assert.Equal(t, expectedRunning, running)
 }
 
+func TestGetRawTasksOutputs(t *testing.T) {
+	store := configstore.DefaultStore
+	store.InitFromEnvironment()
+
+	if err := db.Init(store); err != nil {
+		panic(err)
+	}
+
+	dbp, err := zesty.NewDBProvider(utask.DBName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const batchSize int = 4
+	batchID, tasks := createBatch(t, batchSize, dbp)
+
+	setTaskResults(t, dbp, tasks[:batchSize-1])
+
+	outputs, err := GetRawTasksOutputs(dbp, batchID, "")
+	require.Nil(t, err)
+
+	for i, output := range outputs {
+		result := map[string]any{}
+		err := json.Unmarshal(output.Output, &result)
+		require.Nil(t, err)
+		assert.Equal(t, tasks[i].Result, result)
+	}
+}
+
 func createBatch(t *testing.T, amount int, dbp zesty.DBProvider) (int64, []*task.Task) {
 	tmpl, err := tasktemplate.LoadFromName(dbp, dummyTemplate.Name)
 	if err != nil {
@@ -100,6 +131,20 @@ func createBatch(t *testing.T, amount int, dbp zesty.DBProvider) (int64, []*task
 	}
 
 	return b.ID, tasks
+}
+
+func setTaskResults(t *testing.T, dbp zesty.DBProvider, tasks []*task.Task) {
+	// Setting batched tasks to DONE and giving them a result
+	for _, batchedTask := range tasks {
+		batchedTask.SetState(task.StateDone)
+		result := values.NewValues()
+		result.SetOutput("step", "some string")
+
+		batchedTask.Result = map[string]any{"result_key": "result_value"}
+
+		err := batchedTask.Update(dbp, false, false)
+		require.Nil(t, err)
+	}
 }
 
 var dummyTemplate = tasktemplate.TaskTemplate{

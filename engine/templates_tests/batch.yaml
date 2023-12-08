@@ -12,6 +12,7 @@ steps:
         json_inputs: '[{"specific_string": "specific-1"}, {"specific_string": "specific-2"}]'
         json_common_input: '{"common_string": "common"}'
         sub_batch_size: 2
+        gather_outputs: true
   batchYamlInputs:
     description: Batching tasks YAML
     action:
@@ -24,3 +25,4 @@ steps:
         common_input:
           common_string: common
         sub_batch_size: 2
+        gather_outputs: true

@@ -1,6 +1,7 @@
 package pluginbatch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/ovh/utask/pkg/batch"
 	"github.com/ovh/utask/pkg/batchutils"
 	"github.com/ovh/utask/pkg/constants"
+	"github.com/ovh/utask/pkg/metadata"
 	"github.com/ovh/utask/pkg/plugins/taskplugin"
 	"github.com/ovh/utask/pkg/templateimport"
 	"github.com/ovh/utask/pkg/utils"
@@ -48,6 +50,8 @@ type BatchConfig struct {
 	ResolverGroups    string                   `json:"resolver_groups"`
 	// How many tasks will run concurrently. 0 for infinity (default)
 	SubBatchSize int `json:"sub_batch_size"`
+	// Whether or not to gather child tasks' results. By default, no output is gathered to save performance.
+	GatherOutputs bool `json:"gather_outputs"`
 }
 
 // utaskString is a string with doubly escaped quotes, so the string stays simply escaped after being processed
@@ -66,6 +70,9 @@ type BatchContext struct {
 	// Unmarshalled version of the metadata
 	metadata BatchMetadata
 	StepName string `json:"step_name"`
+	// RawOutput is the output of the previous run. It's used to aggregate previous results with new ones.
+	RawOutput utaskString `json:"output"`
+	output    TasksOutputs
 }
 
 // BatchMetadata holds batch-progress data, communicated between each run of the plugin.
@@ -73,6 +80,17 @@ type BatchMetadata struct {
 	BatchID        string `json:"batch_id"`
 	RemainingTasks int64  `json:"remaining_tasks"`
 	TasksStarted   int64  `json:"tasks_started"`
+	// Last task whose result was gathered. Useful to list the next tasks whose result should be gathered
+	LastGatheredTask string `json:"last_gathered_task"`
+}
+
+// TasksOutputs aggregates the output of each task.
+type TasksOutputs [][]byte
+
+type BatchResult struct {
+	Metadata  BatchMetadata
+	Output    TasksOutputs
+	StepError error
 }
 
 func ctxBatch(stepName string) interface{} {
@@ -87,6 +105,12 @@ func ctxBatch(stepName string) interface{} {
 			stepName,
 		)),
 		StepName: stepName,
+		RawOutput: utaskString(fmt.Sprintf(
+			"{{ if (index .step `%s` ) }}{{ if (index .step `%s` `output`) }}{{ index .step `%s` `output` }}{{ end }}{{ end }}",
+			stepName,
+			stepName,
+			stepName,
+		)),
 	}
 }
 
@@ -123,13 +147,10 @@ func validConfigBatch(config any) error {
 }
 
 func exec(stepName string, config any, ictx any) (any, any, error) {
-	var metadata BatchMetadata
-	var stepError error
-
 	conf := config.(*BatchConfig)
 	batchCtx := ictx.(*BatchContext)
 	if err := parseInputs(conf, batchCtx); err != nil {
-		return nil, batchCtx.RawMetadata.Format(), err
+		return batchCtx.RawOutput.Format(), batchCtx.RawMetadata.Format(), err
 	}
 
 	if conf.Tags == nil {
@@ -143,56 +164,36 @@ func exec(stepName string, config any, ictx any) (any, any, error) {
 
 	dbp, err := zesty.NewDBProvider(utask.DBName)
 	if err != nil {
-		return nil, batchCtx.RawMetadata.Format(), err
+		return batchCtx.RawOutput.Format(), batchCtx.RawMetadata.Format(), err
 	}
 
 	if err := dbp.Tx(); err != nil {
-		return nil, batchCtx.RawMetadata.Format(), err
+		return batchCtx.RawOutput.Format(), batchCtx.RawMetadata.Format(), err
 	}
 
+	var batchResult BatchResult
 	if batchCtx.metadata.BatchID == "" {
 		// The batch needs to be started
-		metadata, err = startBatch(ctx, dbp, conf, batchCtx)
+		batchResult, err = startBatch(ctx, dbp, conf, batchCtx)
 		if err != nil {
 			dbp.Rollback()
 			return nil, nil, err
 		}
-
-		// A step returning a NotAssigned error is set to WAITING by the engine
-		stepError = jujuErrors.NewNotAssigned(fmt.Errorf("tasks from batch %q will start shortly", metadata.BatchID), "")
 	} else {
 		// Batch already started, we either need to start new tasks or check whether they're all done
-		metadata, err = runBatch(ctx, conf, batchCtx, dbp)
+		batchResult, err = runBatch(ctx, conf, batchCtx, dbp)
 		if err != nil {
 			dbp.Rollback()
-			return nil, batchCtx.RawMetadata.Format(), err
+			return batchCtx.RawOutput.Format(), batchCtx.RawMetadata.Format(), err
 		}
-
-		if metadata.RemainingTasks != 0 {
-			// A step returning a NotAssigned error is set to WAITING by the engine
-			stepError = jujuErrors.NewNotAssigned(fmt.Errorf("batch %q is currently RUNNING", metadata.BatchID), "")
-		} else {
-			// The batch is done.
-			// Increasing the resolution's maximum amount of retries to compensate for the amount of runs consumed
-			// by child tasks waking up the parent when they're done.
-			err := increaseRunMax(dbp, batchCtx.ParentTaskID, batchCtx.StepName)
-			if err != nil {
-				return nil, batchCtx.RawMetadata.Format(), err
-			}
-		}
-	}
-
-	formattedMetadata, err := formatOutput(metadata)
-	if err != nil {
-		dbp.Rollback()
-		return nil, batchCtx.RawMetadata.Format(), err
 	}
 
 	if err := dbp.Commit(); err != nil {
 		dbp.Rollback()
-		return nil, batchCtx.RawMetadata.Format(), err
+		return batchCtx.RawOutput.Format(), batchCtx.RawMetadata.Format(), err
 	}
-	return nil, formattedMetadata, stepError
+
+	return batchResult.Format()
 }
 
 // startBatch creates a batch a tasks as described in the given batchArgs.
@@ -201,21 +202,26 @@ func startBatch(
 	dbp zesty.DBProvider,
 	conf *BatchConfig,
 	batchCtx *BatchContext,
-) (BatchMetadata, error) {
+) (BatchResult, error) {
 	b, err := task.CreateBatch(dbp)
 	if err != nil {
-		return BatchMetadata{}, err
+		return BatchResult{}, err
 	}
 
 	taskIDs, err := populateBatch(ctx, b, dbp, conf, batchCtx)
 	if err != nil {
-		return BatchMetadata{}, err
+		return BatchResult{}, err
 	}
 
-	return BatchMetadata{
-		BatchID:        b.PublicID,
-		RemainingTasks: int64(len(conf.Inputs)),
-		TasksStarted:   int64(len(taskIDs)),
+	stepError := jujuErrors.NewNotAssigned(fmt.Errorf("tasks from batch %q will start shortly", metadata.BatchID), "")
+	return BatchResult{
+		Metadata: BatchMetadata{
+			BatchID:        b.PublicID,
+			RemainingTasks: int64(len(conf.Inputs)),
+			TasksStarted:   int64(len(taskIDs)),
+		},
+		// A step returning a NotAssigned error is set to WAITING by the engine
+		StepError: stepError,
 	}, nil
 }
 
@@ -264,40 +270,70 @@ func runBatch(
 	conf *BatchConfig,
 	batchCtx *BatchContext,
 	dbp zesty.DBProvider,
-) (BatchMetadata, error) {
-	metadata := batchCtx.metadata
+) (BatchResult, error) {
+	batchResult := BatchResult{
+		Metadata: batchCtx.metadata,
+		Output:   batchCtx.output,
+	}
 
-	b, err := task.LoadBatchFromPublicID(dbp, metadata.BatchID)
+	b, err := task.LoadBatchFromPublicID(dbp, batchCtx.metadata.BatchID)
 	if err != nil {
 		if jujuErrors.IsNotFound(err) {
 			// The batch has been collected (deleted in DB) because no remaining task referenced it. There's
 			// nothing more to do.
-			return metadata, nil
+			return batchResult, nil
 		}
-		return metadata, err
+		return batchResult, err
 	}
 
-	if metadata.TasksStarted < int64(len(conf.Inputs)) {
-		// New tasks still need to be added to the batch
-
-		taskIDs, err := populateBatch(ctx, b, dbp, conf, batchCtx)
-		if err != nil {
-			return metadata, err
-		}
-
-		started := int64(len(taskIDs))
-		metadata.TasksStarted += started
-		metadata.RemainingTasks -= started // Starting X tasks means that X tasks became DONE
-		return metadata, nil
-	}
-	// else, all tasks are started, we need to wait for the last ones to become DONE
+	// A step returning a NotAssigned error is set to WAITING by the engine
+	stepErrorWaiting := jujuErrors.NewNotAssigned(fmt.Errorf("batch %q is currently RUNNING", b.PublicID), "")
 
 	running, err := batchutils.RunningTasks(dbp, b.ID)
 	if err != nil {
-		return metadata, err
+		return batchResult, err
 	}
-	metadata.RemainingTasks = running
-	return metadata, nil
+
+	if running != 0 {
+		// There still are tasks running, we shouldn't be running the batch again just yet. This can happen if the
+		// resolution was run manually.
+		batchResult.StepError = stepErrorWaiting
+		return batchResult, nil
+	}
+	// else, all started tasks completed, we can spawn new tasks if needed and gather the outputs of tasks DONE.
+
+	if batchCtx.metadata.TasksStarted < int64(len(conf.Inputs)) {
+		// New tasks still need to be added to the batch
+		taskIDs, err := populateBatch(ctx, b, dbp, conf, batchCtx)
+		if err != nil {
+			return batchResult, err
+		}
+
+		started := int64(len(taskIDs))
+		batchResult.Metadata.TasksStarted += started
+		batchResult.Metadata.RemainingTasks -= started // Starting X tasks means that X tasks became DONE
+		batchResult.StepError = stepErrorWaiting
+	} else {
+		// The batch is done.
+		// Increasing the resolution's maximum amount of retries to compensate for the amount of runs consumed
+		// by child tasks waking up the parent when they're done.
+		err := increaseRunMax(dbp, batchCtx.ParentTaskID, batchCtx.StepName)
+		if err != nil {
+			return batchResult, err
+		}
+		batchResult.Metadata.RemainingTasks = running
+	}
+
+	if conf.GatherOutputs {
+		outputs, lastGatheredTask, err := gatherOutputs(dbp, b.ID, batchCtx.metadata.LastGatheredTask)
+		if err != nil {
+			return batchResult, err
+		}
+		batchResult.Output = append(batchResult.Output, outputs...)
+		batchResult.Metadata.LastGatheredTask = lastGatheredTask
+	}
+
+	return batchResult, nil
 }
 
 // increaseRunMax increases the maximum amount of runs of the resolution matching the given parentTaskID by the run
@@ -331,6 +367,13 @@ func parseInputs(conf *BatchConfig, batchCtx *BatchContext) error {
 		}
 	}
 
+	if batchCtx.RawOutput != "" {
+		// Output from a previous run is available
+		if err := json.Unmarshal([]byte(batchCtx.RawOutput), &batchCtx.output); err != nil {
+			return jujuErrors.NewBadRequest(err, "output unmarshalling failure")
+		}
+	}
+
 	if conf.JSONCommonInput != "" {
 		if err := json.Unmarshal([]byte(conf.JSONCommonInput), &conf.CommonInput); err != nil {
 			return jujuErrors.NewBadRequest(err, "JSON common input unmarshalling failure")
@@ -345,18 +388,68 @@ func parseInputs(conf *BatchConfig, batchCtx *BatchContext) error {
 	return nil
 }
 
+// gatherOutputs gathers the output of all DONE tasks in the given batch. To prevent reading the same results twice,
+// only tasks created after the one whose ID is lastTaskPublicID are considered.
+func gatherOutputs(dbp zesty.DBProvider, batchID int64, lastTaskPublicID string) (TasksOutputs, string, error) {
+	outputs, err := batchutils.GetRawTasksOutputs(dbp, batchID, lastTaskPublicID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	tasksOutputs := make(TasksOutputs, 0, len(outputs))
+	for _, output := range outputs {
+		tasksOutputs = append(tasksOutputs, output.Output)
+	}
+	return tasksOutputs, outputs[len(outputs)-1].PublicID, nil
+}
+
 // Format formats the utaskString to make sure it's parsable by subsequent runs of the plugin (i.e.: escaping
 // double quotes).
 func (rm utaskString) Format() string {
 	return strings.ReplaceAll(string(rm), `"`, `\"`)
 }
 
-// formatOutput formats an output (plugin output or metadata) as a uTask-friendly output.
-func formatOutput(result any) (string, error) {
-	marshalled, err := json.Marshal(result)
+// FormatFinal formats the BatchOutput so that it can be used in other steps.
+func (bo TasksOutputs) FormatFinal() (any, error) {
+	cleanOutput := make([]any, 0, len(bo))
+	for _, out := range bo {
+		var result any
+		err := utils.JSONnumberUnmarshal(bytes.NewReader(out), &result)
+		if err != nil {
+			return nil, err
+		}
+		cleanOutput = append(cleanOutput, result)
+	}
+	return cleanOutput, nil
+}
+
+// Format formats the batch's result (output and metadata) according to its progress. When a batch needs to
+// communicate data to itself between runs, metadata and output need to be formatted in a special way. This is due
+// to how plugins' contexts work for complex data types (e.g.: structs, arrays, etc).
+func (br BatchResult) Format() (output any, metadata any, err error) {
+	marshalledMetadata, err := json.Marshal(br.Metadata)
 	if err != nil {
 		logrus.WithError(err).Error("Couldn't marshal batch metadata")
-		return "", err
+		return nil, nil, err
 	}
-	return utaskString(marshalled).Format(), nil
+	metadata = utaskString(marshalledMetadata).Format()
+
+	if br.Metadata.RemainingTasks != 0 {
+		// Partial output formatting. More tasks still need their output to be gathered, so we format current outputs
+		// in a way that is easily parsable by the plugin in following runs.
+		marshalledOutput, err := json.Marshal(br.Output)
+		if err != nil {
+			logrus.WithError(err).Error("Couldn't marshal batch output")
+			return nil, nil, err
+		}
+		output = utaskString(marshalledOutput).Format()
+	} else {
+		// No more tasks' outputs to gather, we can now format the output in a "clean" way, usable by other steps.
+		output, err = br.Output.FormatFinal()
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return output, metadata, br.StepError
 }

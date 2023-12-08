@@ -10,6 +10,9 @@ inputs:
     description: A string common to all tasks in the same batch
     type: string
 
+result_format:
+  body: '{{.step.simpleStep.output}}'
+
 steps:
   simpleStep:
     description: Simple step
