@@ -626,6 +626,31 @@ func resumeParentTask(dbp zesty.DBProvider, currentTask *task.Task, sm *semaphor
 
 	debugLogger.Debugf("resuming parent task %q resolution %q", parentTask.PublicID, *parentTask.Resolution)
 	debugLogger.WithFields(logrus.Fields{"task_id": parentTask.PublicID, "resolution_id": *parentTask.Resolution}).Debugf("resuming resolution %q as child task %q state changed", *parentTask.Resolution, currentTask.PublicID)
+
+	// If the task belongs to a batch, it must wake the its parent.
+	if currentTask.Batch != nil && *currentTask.Batch != "" {
+		// TL;DR: Using a combination of a DB lock on the batch and a SyncResolve to prevent race conditions.
+		//
+		// A race condition may appear when a sub-batch finishes: The last child in the sub-batch resumes its parent,
+		// a new sub-batch is started and while the engine encrypts and commits the parent's resolution in DB, the
+		// newly-created subatch finishes. The last child task in this new sub-batch can't resume its parent since it's
+		// still running, causing the "end of sub-batch" event to be lost.
+		if err = dbp.Tx(); err != nil {
+			return err
+		}
+
+		_, err = task.LoadLockedBatchFromPublicID(dbp, *currentTask.Batch)
+		if err != nil {
+			return err
+		}
+
+		_, resolveErr := GetEngine().SyncResolve(*parentTask.Resolution, sm) // Resuming the Parent
+		if err = dbp.Commit(); err != nil {
+			return err
+		}
+		return resolveErr
+	}
+
 	return GetEngine().Resolve(*parentTask.Resolution, sm)
 }
 

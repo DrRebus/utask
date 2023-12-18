@@ -5,6 +5,7 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/juju/errors"
 	"github.com/loopfz/gadgeto/zesty"
+
 	"github.com/ovh/utask/db/pgjuju"
 	"github.com/ovh/utask/db/sqlgenerator"
 )
@@ -39,17 +40,32 @@ func CreateBatch(dbp zesty.DBProvider) (b *Batch, err error) {
 	return b, nil
 }
 
+// LoadBatchFromPublicID returns a task batch, loaded from DB given its ID, locking the row.
+func LoadLockedBatchFromPublicID(dbp zesty.DBProvider, publicID string) (b *Batch, err error) {
+	return loadBatchFromPublicID(dbp, publicID, true)
+}
+
 // LoadBatchFromPublicID returns a task batch, loaded from DB given its ID
 func LoadBatchFromPublicID(dbp zesty.DBProvider, publicID string) (b *Batch, err error) {
+	return loadBatchFromPublicID(dbp, publicID, false)
+}
+
+func loadBatchFromPublicID(dbp zesty.DBProvider, publicID string, locked bool) (b *Batch, err error) {
 	defer errors.DeferredAnnotatef(&err, "Failed to load batch from public id")
 
-	query, params, err := sqlgenerator.PGsql.Select(
+	sel := sqlgenerator.PGsql.Select(
 		`"batch".id, "batch".public_id`,
 	).From(
 		`"batch"`,
 	).Where(
 		squirrel.Eq{`"batch".public_id`: publicID},
-	).ToSql()
+	)
+
+	if locked {
+		sel = sel.Suffix(`FOR NO KEY UPDATE OF "batch"`)
+	}
+
+	query, params, err := sel.ToSql()
 	if err != nil {
 		return nil, err
 	}
