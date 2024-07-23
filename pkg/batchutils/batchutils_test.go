@@ -1,4 +1,4 @@
-package batchutils
+package batchutils_test
 
 import (
 	"encoding/json"
@@ -17,6 +17,7 @@ import (
 	"github.com/ovh/utask/engine/step/executor"
 	"github.com/ovh/utask/models/task"
 	"github.com/ovh/utask/models/tasktemplate"
+	"github.com/ovh/utask/pkg/batchutils"
 )
 
 func TestRunningTasks(t *testing.T) {
@@ -36,14 +37,14 @@ func TestRunningTasks(t *testing.T) {
 	batchID, tasks := createBatch(t, batchSize, dbp)
 
 	// Making sure that created tasks running
-	running, err := RunningTasks(dbp, batchID)
+	running, err := batchutils.RunningTasks(dbp, batchID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assert.Equal(t, int64(len(tasks)), running)
 
 	// Setting a final state to some tasks in the batch (one per final state)
-	for i, state := range FinalStates {
+	for i, state := range batchutils.FinalStates {
 		tasks[i].SetState(state)
 		if err := tasks[i].Update(dbp, false, false); err != nil {
 			t.Fatal(err)
@@ -51,11 +52,11 @@ func TestRunningTasks(t *testing.T) {
 	}
 
 	// Making sure that tasks in final states aren't counted
-	running, err = RunningTasks(dbp, batchID)
+	running, err = batchutils.RunningTasks(dbp, batchID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedRunning := int64(len(tasks) - len(FinalStates))
+	expectedRunning := int64(len(tasks) - len(batchutils.FinalStates))
 	assert.Equal(t, expectedRunning, running)
 }
 

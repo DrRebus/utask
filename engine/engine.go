@@ -525,7 +525,8 @@ forLoop:
 			if mapStatus[status] {
 				if status == resolution.StateWaiting && recheckWaiting {
 					for name, s := range res.Steps {
-						// Steps using the batch plugin shouldn't be run again when WAITING
+						// Steps using the batch plugin shouldn't be run again when WAITING. Running them second time
+						// may lead to a race condition when the last task of a sub-batch tries to resume its parent
 						if s.State == step.StateWaiting && s.Action.Type != pluginbatch.Plugin.PluginName() {
 							delete(executedSteps, name)
 						}

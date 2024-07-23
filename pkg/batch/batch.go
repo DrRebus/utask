@@ -62,7 +62,7 @@ func Populate(ctx context.Context, batch *task.Batch, dbp zesty.DBProvider, args
 }
 
 func mergeMaps(common, particular map[string]interface{}) (map[string]interface{}, error) {
-	merged := make(map[string]interface{})
+	merged := make(map[string]interface{}, len(common)+len(particular))
 	for key, value := range particular {
 		merged[key] = value
 	}

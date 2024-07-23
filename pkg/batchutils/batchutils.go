@@ -12,12 +12,12 @@ import (
 var FinalStates = []string{task.StateDone, task.StateCancelled, task.StateWontfix}
 
 // RunningTasks returns the amount of running tasks sharing the same given batchId.
-func RunningTasks(dbp zesty.DBProvider, batchId int64) (int64, error) {
+func RunningTasks(dbp zesty.DBProvider, batchID int64) (int64, error) {
 	query, params, err := sqlgenerator.PGsql.
 		Select("count (*)").
 		From("task t").
 		Join("batch b on b.id = t.id_batch").
-		Where(squirrel.Eq{"b.id": batchId}).
+		Where(squirrel.Eq{"b.id": batchID}).
 		Where(squirrel.NotEq{"t.state": FinalStates}).
 		ToSql()
 	if err != nil {

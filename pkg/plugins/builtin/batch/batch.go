@@ -133,7 +133,7 @@ func exec(stepName string, config any, ictx any) (any, any, error) {
 	}
 
 	if conf.Tags == nil {
-		conf.Tags = map[string]string{}
+		conf.Tags = make(map[string]string)
 	}
 	conf.Tags[constants.SubtaskTagParentTaskID] = batchCtx.ParentTaskID
 
@@ -173,7 +173,7 @@ func exec(stepName string, config any, ictx any) (any, any, error) {
 			stepError = jujuErrors.NewNotAssigned(fmt.Errorf("batch %q is currently RUNNING", metadata.BatchID), "")
 		} else {
 			// The batch is done.
-			// Increasing the resolution's maximum amount of retries to compensate for the amount of runs consumed
+			// We increase the resolution's maximum amount of retries to compensate for the amount of runs consumed
 			// by child tasks waking up the parent when they're done.
 			err := increaseRunMax(dbp, batchCtx.ParentTaskID, batchCtx.StepName)
 			if err != nil {
@@ -309,10 +309,12 @@ func increaseRunMax(dbp zesty.DBProvider, parentTaskID string, batchStepName str
 	if err != nil {
 		return err
 	}
+
 	res, err := resolution.LoadLockedFromPublicID(dbp, *t.Resolution)
 	if err != nil {
 		return err
 	}
+
 	step, ok := res.Steps[batchStepName]
 	if !ok {
 		return fmt.Errorf("step '%s' not found in resolution", batchStepName)
