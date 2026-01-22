@@ -7,9 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/sync/semaphore"
-
 	"github.com/ovh/configstore"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/ovh/utask/pkg/compress"
 	"github.com/ovh/utask/pkg/compress/noop"

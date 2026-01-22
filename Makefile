@@ -1,4 +1,4 @@
-BINARY			= utask
+BINARY			= utask-lib
 
 MAIN_LOCATION	= ./cmd
 
@@ -96,6 +96,6 @@ endif
 package:
 
 makefile:
-	sed -e 's/VERSION=/VERSION=${VERSION}/g' hack/Makefile-child | sed -e 's/LAST_COMMIT=/LAST_COMMIT=${LAST_COMMIT}/g' >| Makefile  
+	sed -e 's/VERSION=/VERSION=${VERSION}/g' hack/Makefile-child | sed -e 's/LAST_COMMIT=/LAST_COMMIT=${LAST_COMMIT}/g' >| Makefile
 
 .PHONY: all clean test re package release test test-travis test-docker run-test-stack run-test-stack-docker run-goreleaser docker makefile

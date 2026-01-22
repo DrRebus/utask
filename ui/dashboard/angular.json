@@ -95,7 +95,7 @@
                 "serve": {
                     "builder": "@angular-devkit/build-angular:dev-server",
                     "options": {
-                        "proxyConfig": "/home/proxy.conf.js",
+                        "proxyConfig": "./proxy.conf.js",
                         "disableHostCheck": true
                     },
                     "configurations": {
@@ -257,6 +257,6 @@
         }
     },
     "cli": {
-        "analytics": false
+      "analytics": false
     }
 }
