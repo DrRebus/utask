@@ -143,6 +143,20 @@ CREATE TABLE "cache" (
 
 CREATE INDEX "cache_expires_at_idx" ON "cache" ("expires_at") WHERE "expires_at" IS NOT NULL;
 
-INSERT INTO "utask_sql_migrations" VALUES ('v1.21.1-migration011');
+CREATE TABLE "step" (
+    id BIGSERIAL PRIMARY KEY,
+    resolution_id BIGINT REFERENCES "resolution"(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    state TEXT NOT NULL,
+    try_count INTEGER NOT NULL,
+    max_retries INTEGER NOT NULL,
+    last_run TIMESTAMP with time zone,
+    idempotent BOOLEAN NOT NULL,
+
+    encrypted_step_data BYTEA
+);
+
+INSERT INTO "utask_sql_migrations" VALUES ('v1.22.0-migration012');
 
 END;

@@ -358,7 +358,7 @@ func (tt *TaskTemplate) Valid() (err error) {
 
 	// valid and normalize steps:
 	for name, st := range tt.Steps {
-		if err := st.ValidAndNormalize(name, tt.BaseConfigurations, tt.Steps); err != nil {
+		if err := step.ValidAndNormalize(st, name, tt.BaseConfigurations, tt.Steps); err != nil {
 			return errors.NewNotValid(err, fmt.Sprintf("Invalid step %s", name))
 		}
 

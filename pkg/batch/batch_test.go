@@ -86,11 +86,15 @@ var dummyTemplate = tasktemplate.TaskTemplate{
 	},
 	Steps: map[string]*step.Step{
 		"step": {
-			Action: executor.Executor{
-				Type: "echo",
-				Configuration: json.RawMessage(`{
-					"output": {"foo":"bar"}
-				}`),
+			DBModel: step.DBModel{
+				StepData: step.EncryptedStepData{
+					Action: executor.Executor{
+						Type: "echo",
+						Configuration: json.RawMessage(`{
+							"output": {"foo":"bar"}
+						}`),
+					},
+				},
 			},
 		},
 	},

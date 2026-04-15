@@ -112,7 +112,7 @@ func lintStepDetails(steps map[string]*step.Step, parts []string) error {
 		return errors.Errorf("Unknown step %s", stepName)
 	}
 
-	schema := v.ExecutorMetadata()
+	schema := step.ExecutorMetadata(v)
 
 	return lint(stepName, schema, parts[2:]...)
 }

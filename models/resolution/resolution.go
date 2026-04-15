@@ -11,12 +11,14 @@ import (
 	"github.com/juju/errors"
 	"github.com/loopfz/gadgeto/zesty"
 
+	"github.com/ovh/configstore"
 	"github.com/ovh/utask"
 	"github.com/ovh/utask/db/pgjuju"
 	"github.com/ovh/utask/db/sqlgenerator"
 	"github.com/ovh/utask/engine/step"
 	"github.com/ovh/utask/engine/values"
 	"github.com/ovh/utask/models"
+	stepModel "github.com/ovh/utask/models/step"
 	"github.com/ovh/utask/models/task"
 	"github.com/ovh/utask/models/tasktemplate"
 	"github.com/ovh/utask/pkg/compress"
@@ -147,32 +149,6 @@ func Create(dbp zesty.DBProvider, t *task.Task, resolverInputs map[string]interf
 
 	r.BaseConfigurations = tt.BaseConfigurations
 
-	c, err := compress.Get(utask.StepsCompressionAlg)
-	if err != nil {
-		return nil, err
-	}
-
-	r.StepsCompressionAlg = utask.StepsCompressionAlg
-
-	jsonSteps, err := json.Marshal(r.Steps)
-	if err != nil {
-		return nil, err
-	}
-
-	compressedSteps, err := c.Compress(jsonSteps)
-	if err != nil {
-		return nil, err
-	}
-
-	encryptedSteps, err := models.EncryptionKey.Encrypt(compressedSteps, []byte(r.PublicID))
-	if err != nil {
-		return nil, err
-	}
-
-	dst := make([]byte, hex.EncodedLen(len(encryptedSteps)))
-	hex.Encode(dst, encryptedSteps)
-	r.EncryptedSteps = encryptedSteps
-
 	err = tt.ValidateResolverInputs(resolverInputs)
 	if err != nil {
 		return nil, err
@@ -185,15 +161,79 @@ func Create(dbp zesty.DBProvider, t *task.Task, resolverInputs map[string]interf
 	}
 	r.EncryptedInput = []byte(encrInput)
 
+	cfg, err := utask.Config(configstore.DefaultStore)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.UseStepTable {
+		r.UsesStepTable = true
+		r.EncryptedSteps = nil
+
+		sp, err := dbp.TxSavepoint()
+		defer dbp.RollbackTo(sp)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := r.encryptMarshalSteps(); err != nil {
+			return nil, err
+		}
+	}
+
 	err = dbp.DB().Insert(&r.DBModel)
 	if err != nil {
 		return nil, pgjuju.Interpret(err)
+	}
+
+	if cfg.UseStepTable {
+		for _, s := range r.Steps {
+			s.CompressionAlg = r.StepsCompressionAlg
+			s.ResolutionID = uint64(r.DBModel.ID)
+			err := dbp.DB().Insert(s)
+			if err != nil {
+				return nil, pgjuju.Interpret(err)
+			}
+		}
+
+		if err := dbp.Commit(); err != nil {
+			return nil, pgjuju.Interpret(err)
+		}
 	}
 
 	// register validation duration
 	task.RegisterValidationTime(tt.Name, t.Created)
 
 	return r, nil
+}
+
+func (r *Resolution) encryptMarshalSteps() error {
+	c, err := compress.Get(utask.StepsCompressionAlg)
+	if err != nil {
+		return err
+	}
+
+	r.StepsCompressionAlg = utask.StepsCompressionAlg
+
+	jsonSteps, err := json.Marshal(r.Steps)
+	if err != nil {
+		return err
+	}
+
+	compressedSteps, err := c.Compress(jsonSteps)
+	if err != nil {
+		return err
+	}
+
+	encryptedSteps, err := models.EncryptionKey.Encrypt(compressedSteps, []byte(r.PublicID))
+	if err != nil {
+		return err
+	}
+
+	dst := make([]byte, hex.EncodedLen(len(encryptedSteps)))
+	hex.Encode(dst, encryptedSteps)
+	r.EncryptedSteps = encryptedSteps
+	return nil
 }
 
 // LoadFromPublicID returns a single task resolution given its public ID
@@ -247,38 +287,51 @@ func load(dbp zesty.DBProvider, publicID string, locked bool, lockNoWait bool) (
 
 	r.Values = values.NewValues()
 
-	c, err := compress.Get(r.StepsCompressionAlg)
-	if err != nil {
-		return nil, err
+	steps := map[string]*step.Step{}
+	if r.UsesStepTable {
+		// The Resolution holds no steps, they must have been migrated to their standalone table
+		steps, err = stepModel.LoadStepsAsMap(dbp, r.ID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Steps were found in the Resolution, we parse them as usual
+		c, err := compress.Get(r.StepsCompressionAlg)
+		if err != nil {
+			return nil, err
+		}
+
+		dst := make([]byte, hex.DecodedLen(len(r.EncryptedSteps)))
+
+		// if we can't hex Decode, we might be in the case of a Resolution row in database that was
+		// created between the v1.21.1 and v1.21.3 that was bugged, and failed to hex Encode/Decode the
+		// ciphered data. We need to keep backward compatibility for those, but this should not happen
+		// often.
+		// See https://github.com/ovh/utask/commit/bf23fbb10b62bb487ac4ea01b1e519f85480e58b and migration
+		// from symmecrypt.Key.DecryptMarshal to symmecrypt.Key.Decrypt
+		if _, err = hex.Decode(dst, r.EncryptedSteps); err != nil {
+			dst = r.EncryptedSteps
+		}
+
+		compressedSteps, err := models.EncryptionKey.Decrypt(dst, []byte(r.PublicID))
+		if err != nil {
+			return nil, err
+		}
+
+		jsonSteps, err := c.Decompress(compressedSteps)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := utils.JSONnumberUnmarshal(bytes.NewReader(jsonSteps), &steps); err != nil {
+			return nil, err
+		}
+	}
+	if len(steps) == 0 {
+		return nil, errors.NotFoundf("no steps found in neither Resolution nor step table")
 	}
 
-	dst := make([]byte, hex.DecodedLen(len(r.EncryptedSteps)))
-
-	// if we can't hex Decode, we might be in the case of a Resolution row in database that was
-	// created between the v1.21.1 and v1.21.3 that was bugged, and failed to hex Encode/Decode the
-	// ciphered data. We need to keep backward compatibility for those, but this should not happen
-	// often.
-	// See https://github.com/ovh/utask/commit/bf23fbb10b62bb487ac4ea01b1e519f85480e58b and migration
-	// from symmecrypt.Key.DecryptMarshal to symmecrypt.Key.Decrypt
-	if _, err = hex.Decode(dst, r.EncryptedSteps); err != nil {
-		dst = r.EncryptedSteps
-	}
-
-	compressedSteps, err := models.EncryptionKey.Decrypt(dst, []byte(r.PublicID))
-	if err != nil {
-		return nil, err
-	}
-
-	jsonSteps, err := c.Decompress(compressedSteps)
-	if err != nil {
-		return nil, err
-	}
-
-	st := make(map[string]*step.Step)
-	if err := utils.JSONnumberUnmarshal(bytes.NewReader(jsonSteps), &st); err != nil {
-		return nil, err
-	}
-	r.setSteps(st)
+	r.setSteps(steps)
 
 	input := make(map[string]interface{})
 	err = models.EncryptionKey.DecryptMarshal(string(r.EncryptedInput), &input, []byte(r.PublicID))
@@ -378,30 +431,6 @@ func (r *Resolution) Update(dbp zesty.DBProvider) (err error) {
 	defer errors.DeferredAnnotatef(&err, "Failed to update resolution")
 
 	// TODO tasktemplate.ValidateResolverInput !!
-
-	c, err := compress.Get(r.StepsCompressionAlg)
-	if err != nil {
-		return err
-	}
-
-	jsonSteps, err := json.Marshal(r.Steps)
-	if err != nil {
-		return err
-	}
-
-	compressedSteps, err := c.Compress(jsonSteps)
-	if err != nil {
-		return err
-	}
-
-	dst := make([]byte, hex.EncodedLen(len(compressedSteps)))
-	hex.Encode(dst, compressedSteps)
-	encryptedSteps, err := models.EncryptionKey.Encrypt(compressedSteps, []byte(r.PublicID))
-	if err != nil {
-		return err
-	}
-	r.EncryptedSteps = encryptedSteps
-
 	encrInput, err := models.EncryptionKey.EncryptMarshal(r.ResolverInput, []byte(r.PublicID))
 	if err != nil {
 		return err
@@ -426,6 +455,34 @@ func (r *Resolution) Update(dbp zesty.DBProvider) (err error) {
 		}
 	}
 	r.NextRetry = &nextRetry
+
+	cfg, err := utask.Config(configstore.DefaultStore)
+	if err != nil {
+		return err
+	}
+
+	if cfg.UseStepTable {
+		sp, err := dbp.TxSavepoint()
+		defer dbp.RollbackTo(sp)
+		if err != nil {
+			return err
+		}
+
+		for _, step := range r.Steps {
+			rows, err := dbp.DB().Update(step)
+			if err != nil {
+				return pgjuju.Interpret(err)
+			} else if rows != 1 {
+				return errors.Errorf("invalid update for step '%s' of resolution: %s", step.Name, r.PublicID)
+			}
+		}
+
+		defer dbp.Commit()
+	} else {
+		if err := r.encryptMarshalSteps(); err != nil {
+			return err
+		}
+	}
 
 	rows, err := dbp.DB().Update(&r.DBModel)
 	if err != nil {
@@ -670,8 +727,57 @@ func getNextRetry(dbp zesty.DBProvider, resolutionID int64) (time.Time, error) {
 	return *tmpRes.NextRetry, nil
 }
 
+func (r *Resolution) MigrateStepsToStandalone(dbp zesty.DBProvider) error {
+	steps := make([]*step.Step, 0, len(r.Steps))
+	for _, step := range r.Steps {
+		step.ResolutionID = uint64(r.ID)
+		steps = append(steps, step)
+	}
+
+	err := dbp.DB().Insert(steps)
+	if err != nil {
+		return pgjuju.Interpret(err)
+	}
+
+	r.EncryptedSteps = nil
+	return nil
+}
+
+func (r *Resolution) MigrateStepsFromStandalone(dbp zesty.DBProvider) error {
+	sp, err := dbp.TxSavepoint()
+	defer dbp.RollbackTo(sp)
+	if err != nil {
+		return err
+	}
+
+	if err := r.encryptMarshalSteps(); err != nil {
+		return err
+	}
+
+	query, params, err := sqlgenerator.PGsql.Where(squirrel.Eq{"resolution_id": r.ID}).Delete("step").ToSql()
+	if err != nil {
+		return err
+	}
+
+	res, err := dbp.DB().Exec(query, params)
+	if err != nil {
+		return pgjuju.Interpret(err)
+	}
+
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		return pgjuju.Interpret(err)
+	}
+	if deleted != int64(len(r.Steps)) {
+		errFmt := "wrong amount of steps deleted for resolution '%s': %d instead of %d"
+		return errors.Errorf(errFmt, r.PublicID, deleted, len(r.Steps))
+	}
+
+	return pgjuju.Interpret(dbp.Commit())
+}
+
 var rSelector = sqlgenerator.PGsql.Select(
-	`"resolution".id, "resolution".public_id, "resolution".id_task, "resolution".resolver_username, "resolution".state, "resolution".instance_id, "resolution".created, "resolution".last_start, "resolution".last_stop, "resolution".next_retry, "resolution".run_count, "resolution".run_max, "resolution".crypt_key, "resolution".encrypted_steps, "resolution".steps_compression_alg, "resolution".encrypted_resolver_input, "resolution".base_configurations, "task".public_id as task_public_id, "task".title as task_title`,
+	`"resolution".id, "resolution".public_id, "resolution".id_task, "resolution".resolver_username, "resolution".state, "resolution".instance_id, "resolution".created, "resolution".last_start, "resolution".last_stop, "resolution".next_retry, "resolution".run_count, "resolution".run_max, "resolution".crypt_key, "resolution".encrypted_steps, "resolution".steps_compression_alg, "resolution".encrypted_resolver_input, "resolution".uses_step_table, "resolution".base_configurations, "task".public_id as task_public_id, "task".title as task_title`,
 ).From(
 	`"resolution"`,
 ).OrderBy(

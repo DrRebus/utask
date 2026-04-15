@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"github.com/ovh/utask/engine/step/condition"
 	"github.com/ovh/utask/engine/step/executor"
 	"github.com/ovh/utask/engine/values"
+	"github.com/ovh/utask/models/step"
 	"github.com/ovh/utask/pkg/jsonschema"
 	"github.com/ovh/utask/pkg/utils"
 )
@@ -35,22 +35,20 @@ const (
 
 // possible states of a step
 const (
-	StateAny           = "ANY" // wildcard
-	StateTODO          = "TODO"
-	StateWaiting       = "WAITING"
-	StateRunning       = "RUNNING"
-	StateDone          = "DONE"
-	StateClientError   = "CLIENT_ERROR"
-	StateServerError   = "SERVER_ERROR"
-	StateFatalError    = "FATAL_ERROR"
-	StateCrashed       = "CRASHED"
-	StatePrune         = "PRUNE"
-	StateToRetry       = "TO_RETRY"
-	StateRetryNow      = "RETRY_NOW"
-	StateAfterrunError = "AFTERRUN_ERROR"
-
-	// steps that carry a foreach list of arguments
-	StateExpanded = "EXPANDED"
+	StateAny           = step.StateAny
+	StateTODO          = step.StateTODO
+	StateWaiting       = step.StateWaiting
+	StateRunning       = step.StateRunning
+	StateDone          = step.StateDone
+	StateClientError   = step.StateClientError
+	StateServerError   = step.StateServerError
+	StateFatalError    = step.StateFatalError
+	StateCrashed       = step.StateCrashed
+	StatePrune         = step.StatePrune
+	StateToRetry       = step.StateToRetry
+	StateRetryNow      = step.StateRetryNow
+	StateAfterrunError = step.StateAfterrunError
+	StateExpanded      = step.StateExpanded
 )
 
 const (
@@ -61,67 +59,9 @@ const (
 	maxExecutionDelay = time.Duration(20) * time.Second
 )
 
-var (
-	builtinStates            = []string{StateTODO, StateWaiting, StateRunning, StateDone, StateClientError, StateServerError, StateFatalError, StateCrashed, StatePrune, StateToRetry, StateRetryNow, StateAfterrunError, StateAny, StateExpanded}
-	stepConditionValidStates = []string{StateDone, StatePrune, StateToRetry, StateRetryNow, StateFatalError, StateClientError}
-	runnableStates           = []string{StateTODO, StateServerError, StateClientError, StateFatalError, StateCrashed, StateToRetry, StateRetryNow, StateAfterrunError, StateExpanded, StateWaiting} // everything but RUNNING, DONE, PRUNE
-	retriableStates          = []string{StateServerError, StateToRetry, StateAfterrunError}
-	validAfterRunStates      = []string{StateDone, StateClientError, StateAfterrunError}
-)
-
-// Step describes one unit of work within a task, and its dependency to other steps
-// a step contains an action that makes use of an available executor, with a specific parameter set
-// The result of a step is stored as its output, and can be validated with json schema
-// Any error and metadata returned by the step's executor will also be stored, resulting in a state
-// The state of a step can be customized by the author of a template, to account for business-specific
-// outcomes (eg. a 404 needn't be an error, it can be called NOT_FOUND and determine execution flow
-// without blocking).
-// Through the "foreach" parameter, a step can be configured to spawn sub-steps for a list of items:
-// the result of such a step will be the collection of results of all sub-steps, which can be fed
-// into another "foreach" step
-// A step can be configured to evaluate "conditions" before and after the action is performed:
-//   - a "skip" condition will be run before and might determine that the step's action can be skipped entirely
-//   - a "check" condition will be run after the action, and can control execution flow by examining
-//     the step's result and modifying step states through the entire task's resolution
-type Step struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Idempotent  bool   `json:"idempotent"`
-	// action
-	Action  executor.Executor  `json:"action"`
-	PreHook *executor.Executor `json:"pre_hook,omitempty"`
-	// result
-	Schema         json.RawMessage         `json:"json_schema,omitempty"`
-	ResultValidate jsonschema.ValidateFunc `json:"-"`
-	Output         interface{}             `json:"output,omitempty"`
-	Metadata       interface{}             `json:"metadata,omitempty"`
-	Children       []interface{}           `json:"children,omitempty"`
-	Error          string                  `json:"error,omitempty"`
-	State          string                  `json:"state,omitempty"`
-	// hints about ETA latency, async, for retrier to define strategy
-	// how often VS how many times
-	RetryPattern   string        `json:"retry_pattern,omitempty"` // seconds, minutes, hours
-	TryCount       int           `json:"try_count,omitempty"`
-	MaxRetries     int           `json:"max_retries,omitempty"`
-	LastRun        time.Time     `json:"last_run,omitempty"`
-	ExecutionDelay time.Duration `json:"execution_delay,omitempty"`
-
-	// flow control
-	Dependencies []string               `json:"dependencies,omitempty"`
-	CustomStates []string               `json:"custom_states,omitempty"`
-	Conditions   []*condition.Condition `json:"conditions,omitempty"`
-	skipped      bool
-	// loop
-	ForEach         string          `json:"foreach,omitempty"` // "parent" step: expression for list of items
-	ForEachStrategy string          `json:"foreach_strategy"`
-	ChildrenSteps   []string        `json:"children_steps,omitempty"` // list of children names
-	ChildrenStepMap map[string]bool `json:"children_steps_map,omitempty"`
-	Item            interface{}     `json:"item,omitempty"` // "child" step: item value, issued from foreach
-
-	Resources []string `json:"resources"` // resource limits to enforce
-
-	Tags map[string]string `json:"tags"`
-}
+type DBModel = step.DBModel
+type EncryptedStepData = step.StepData
+type Step = step.Step
 
 // Context provides a step with extra metadata about the task
 type Context struct {
@@ -198,7 +138,7 @@ func (e *execution) generateOutput(st *Step, v *values.Values) error {
 	return nil
 }
 
-func (st *Step) generateExecution(action executor.Executor, baseConfig map[string]json.RawMessage, values *values.Values, shutdownCtx context.Context) (*execution, error) {
+func generateExecution(st *Step, action executor.Executor, baseConfig map[string]json.RawMessage, values *values.Values, shutdownCtx context.Context) (*execution, error) {
 	var ret = execution{
 		config:      action.Configuration,
 		shutdownCtx: shutdownCtx,
@@ -299,7 +239,7 @@ func (st *Step) generateExecution(action executor.Executor, baseConfig map[strin
 	return &ret, nil
 }
 
-func (st *Step) execute(execution *execution, callback func(interface{}, interface{}, map[string]string, error)) {
+func execute(st *Step, execution *execution, callback func(interface{}, interface{}, map[string]string, error)) {
 
 	select {
 	case <-execution.shutdownCtx.Done():
@@ -348,12 +288,12 @@ func Run(st *Step, baseConfig map[string]json.RawMessage, stepValues *values.Val
 		return
 	}
 
-	if st.skipped {
+	if st.Skipped {
 		go noopStep(st, stepChan)
 		return
 	}
 
-	prehook, err := st.GetPreHook()
+	prehook, err := GetPreHook(st)
 	if err != nil {
 		st.State = StateFatalError
 		st.Error = err.Error()
@@ -372,7 +312,7 @@ func Run(st *Step, baseConfig map[string]json.RawMessage, stepValues *values.Val
 	var prehookFailed bool
 	var preHookWg sync.WaitGroup
 	if prehook != nil {
-		preHookExecution, err := st.generateExecution(*prehook, baseConfig, stepValues, shutdownCtx)
+		preHookExecution, err := generateExecution(st, *prehook, baseConfig, stepValues, shutdownCtx)
 		if err != nil {
 			st.State = StateFatalError
 			st.Error = fmt.Sprintf("prehook: %s", err)
@@ -384,7 +324,7 @@ func Run(st *Step, baseConfig map[string]json.RawMessage, stepValues *values.Val
 		go func() {
 			defer preHookWg.Done()
 
-			st.execute(preHookExecution, func(output interface{}, metadata interface{}, tags map[string]string, err error) {
+			execute(st, preHookExecution, func(output interface{}, metadata interface{}, tags map[string]string, err error) {
 				if err != nil {
 					prehookFailed = true
 					st.State = StateFatalError
@@ -423,7 +363,7 @@ func Run(st *Step, baseConfig map[string]json.RawMessage, stepValues *values.Val
 		}
 
 		// Generate the execution
-		execution, err := st.generateExecution(st.Action, baseConfig, preHookValues, shutdownCtx)
+		execution, err := generateExecution(st, st.Action, baseConfig, preHookValues, shutdownCtx)
 		if err != nil {
 			st.State = StateFatalError
 			st.Error = err.Error()
@@ -431,7 +371,7 @@ func Run(st *Step, baseConfig map[string]json.RawMessage, stepValues *values.Val
 			return
 		}
 
-		st.execute(execution, func(output interface{}, metadata interface{}, tags map[string]string, err error) {
+		execute(st, execution, func(output interface{}, metadata interface{}, tags map[string]string, err error) {
 			st.Output, st.Metadata, st.Tags = output, metadata, tags
 
 			outputErr := execution.generateOutput(st, preHookValues)
@@ -481,7 +421,7 @@ type StateSetter func(step, state, message string)
 // PreRun evaluates a step's "skip" conditions before the Step's action has been performed
 // and impacts the entire task's execution flow through the provided StateSetter
 func PreRun(st *Step, values *values.Values, ss StateSetter, executedSteps map[string]bool) {
-	conditions, err := st.GetConditions()
+	conditions, err := GetConditions(st)
 	if err != nil {
 		ss(st.Name, StateServerError, err.Error())
 		return
@@ -504,7 +444,7 @@ func PreRun(st *Step, values *values.Values, ss StateSetter, executedSteps map[s
 				ss(st.Name, StateServerError, err.Error())
 
 				// Do not run the step.
-				st.skipped = true
+				st.Skipped = true
 				// inserting current skipped step into executedSteps to avoid being picked-up again in availableSteps candidates
 				executedSteps[st.Name] = true
 				break
@@ -512,7 +452,7 @@ func PreRun(st *Step, values *values.Values, ss StateSetter, executedSteps map[s
 		}
 
 		// Reaching this means the condition is met: set the step to skipped
-		st.skipped = true
+		st.Skipped = true
 
 		// Inserting current skipped step into executedSteps to avoid being picked-up again in availableSteps candidates
 		executedSteps[st.Name] = true
@@ -534,11 +474,11 @@ func PreRun(st *Step, values *values.Values, ss StateSetter, executedSteps map[s
 // and impacts the entire task's execution flow through the provided StateSetter
 func AfterRun(st *Step, values *values.Values, ss StateSetter) {
 	// Not all steps' states should trigger evaluation of AfterRun conditions
-	if st.skipped || st.ForEach != "" || !slices.Contains(validAfterRunStates, st.State) {
+	if st.Skipped || st.ForEach != "" || !step.ValidAfterRunStates.Contains(st.State) {
 		return
 	}
 
-	conditions, err := st.GetConditions()
+	conditions, err := GetConditions(st)
 	if err != nil {
 		ss(st.Name, StateServerError, err.Error())
 		return
@@ -582,7 +522,7 @@ func AfterRun(st *Step, values *values.Values, ss StateSetter) {
 // - validates conditions
 // - validates the provided json schema for result validation
 // - checks dependency declaration against the task's execution tree
-func (st *Step) ValidAndNormalize(name string, baseConfigs map[string]json.RawMessage, steps map[string]*Step) error {
+func ValidAndNormalize(st *Step, name string, baseConfigs map[string]json.RawMessage, steps map[string]*Step) error {
 	if name == stepRefThis {
 		return errors.BadRequestf("'%s' step name is reserved", stepRefThis)
 	}
@@ -591,7 +531,7 @@ func (st *Step) ValidAndNormalize(name string, baseConfigs map[string]json.RawMe
 	if _, err := validExecutor(baseConfigs, st.Action, st.PreHook); err != nil {
 		return errors.NewNotValid(err, "Invalid executor action")
 	}
-	preHook, err := st.GetPreHook()
+	preHook, err := GetPreHook(st)
 	if err != nil {
 		return errors.NewNotValid(err, "Invalid prehook action")
 	}
@@ -636,10 +576,10 @@ func (st *Step) ValidAndNormalize(name string, baseConfigs map[string]json.RawMe
 
 	// valid custom states
 	for _, cState := range st.CustomStates {
-		if utils.ListContainsString(builtinStates, cState) {
+		if step.BuiltinStates.Contains(cState) {
 			return errors.NewNotValid(nil,
 				fmt.Sprintf(`Custom state %q is not allowed as it's a reserved state. Reserved state are: "%s"`,
-					cState, strings.Join(builtinStates, `", "`)))
+					cState, strings.Join(step.BuiltinStates, `", "`)))
 		}
 	}
 
@@ -701,80 +641,8 @@ func (st *Step) ValidAndNormalize(name string, baseConfigs map[string]json.RawMe
 	return nil
 }
 
-// ValidAndNormalizeNewStep will validate that a given step doesn't have extragenous fields defined
-// when coming from a task_template.
-func (st *Step) ValidAndNormalizeNewStep() error {
-	// check that we don't set restricted field from the template
-	if st.State != "" {
-		return errors.NewNotValid(nil, "step state must not be set")
-	}
-
-	if st.ChildrenSteps != nil {
-		return errors.NewNotValid(nil, "step children_steps must not be set")
-	}
-
-	if st.ChildrenStepMap != nil {
-		return errors.NewNotValid(nil, "step children_steps_map must not be set")
-	}
-
-	if st.Output != nil {
-		return errors.NewNotValid(nil, "step output must not be set")
-	}
-
-	if st.Metadata != nil {
-		return errors.NewNotValid(nil, "step metadatas must not be set")
-	}
-
-	if st.Tags != nil {
-		return errors.NewNotValid(nil, "step tags must not be set")
-	}
-
-	if st.Children != nil {
-		return errors.NewNotValid(nil, "step children must not be set")
-	}
-
-	if st.Error != "" {
-		return errors.NewNotValid(nil, "step error must not be set")
-	}
-
-	if st.TryCount != 0 {
-		return errors.NewNotValid(nil, "step try_count must not be set")
-	}
-
-	t := time.Time{}
-	if st.LastRun != t {
-		return errors.NewNotValid(nil, "step last_time must not be set")
-	}
-
-	if st.Item != nil {
-		return errors.NewNotValid(nil, "step item must not be set")
-	}
-
-	return nil
-}
-
-// IsRunnable asserts that Step is in a runnable state
-func (st *Step) IsRunnable() bool {
-	return utils.ListContainsString(runnableStates, st.State)
-}
-
-// IsRetriable asserts that Step is eligible for retry
-func (st *Step) IsRetriable() bool {
-	return utils.ListContainsString(retriableStates, st.State)
-}
-
-// IsFinal asserts that Step is in a final step (not to be run again)
-func (st *Step) IsFinal() bool {
-	return (st.State != StateRunning && !st.IsRunnable())
-}
-
-// IsChild asserts that Step was spawned by a foreach step
-func (st *Step) IsChild() bool {
-	return st.Item != nil
-}
-
 // ExecutorMetadata returns the step's runner metadata schema
-func (st *Step) ExecutorMetadata() json.RawMessage {
+func ExecutorMetadata(st *Step) json.RawMessage {
 	runner, err := getRunner(st.Action.Type)
 	if err != nil {
 		return []byte{}
@@ -783,7 +651,7 @@ func (st *Step) ExecutorMetadata() json.RawMessage {
 	return runner.MetadataSchema()
 }
 
-func (st *Step) walkThroughFunctions(f func(*functions.Function)) error {
+func walkThroughFunctions(st *Step, f func(*functions.Function)) error {
 	var runnerName = st.Action.Type
 	for {
 		runner, err := getRunner(runnerName)
@@ -802,10 +670,10 @@ func (st *Step) walkThroughFunctions(f func(*functions.Function)) error {
 }
 
 // GetConditions returns the list of conditions of this step resolved (functions included)
-func (st *Step) GetConditions() ([]*condition.Condition, error) {
+func GetConditions(st *Step) ([]*condition.Condition, error) {
 	conditions := st.Conditions
 
-	if err := st.walkThroughFunctions(func(functionRunner *functions.Function) {
+	if err := walkThroughFunctions(st, func(functionRunner *functions.Function) {
 		conditions = append(functionRunner.Conditions, conditions...)
 	}); err != nil {
 		return nil, err
@@ -814,10 +682,10 @@ func (st *Step) GetConditions() ([]*condition.Condition, error) {
 }
 
 // GetCustomStates returns the list of custom states of the Step (functions included)
-func (st *Step) GetCustomStates() ([]string, error) {
+func GetCustomStates(st *Step) ([]string, error) {
 	states := st.CustomStates
 
-	if err := st.walkThroughFunctions(func(functionRunner *functions.Function) {
+	if err := walkThroughFunctions(st, func(functionRunner *functions.Function) {
 		states = utils.AppendUniq(states, functionRunner.CustomStates...)
 	}); err != nil {
 		return nil, err
@@ -826,10 +694,10 @@ func (st *Step) GetCustomStates() ([]string, error) {
 }
 
 // GetPreHook returns the prehook that need to be executed (function included)
-func (st *Step) GetPreHook() (*executor.Executor, error) {
+func GetPreHook(st *Step) (*executor.Executor, error) {
 	preHook := st.PreHook
 
-	if err := st.walkThroughFunctions(func(functionRunner *functions.Function) {
+	if err := walkThroughFunctions(st, func(functionRunner *functions.Function) {
 		if functionRunner.PreHook != nil {
 			preHook = functionRunner.PreHook
 		}
@@ -840,14 +708,12 @@ func (st *Step) GetPreHook() (*executor.Executor, error) {
 
 }
 
-func (st *Step) CheckIfValidState() (bool, error) {
-	for _, state := range builtinStates {
-		if state == st.State {
-			return true, nil
-		}
+func CheckIfValidState(st *Step) (bool, error) {
+	if step.BuiltinStates.Contains(st.State) {
+		return true, nil
 	}
 
-	states, err := st.GetCustomStates()
+	states, err := GetCustomStates(st)
 	if err != nil {
 		return false, err
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ovh/utask"
+	"github.com/ovh/utask/engine/step"
 	"github.com/ovh/utask/models"
 	"github.com/ovh/utask/models/resolution"
 	"github.com/ovh/utask/models/runnerinstance"
@@ -41,6 +42,7 @@ var schema = []tableModel{
 	{task.BatchDBModel{}, "batch", []string{"id"}, true},
 	{resolution.DBModel{}, "resolution", []string{"id"}, true},
 	{runnerinstance.Instance{}, "runner_instance", []string{"id"}, true},
+	{step.Step{}, "step", []string{"id"}, true},
 }
 
 // RegisterTableModel registers a new table model

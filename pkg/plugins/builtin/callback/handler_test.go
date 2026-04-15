@@ -149,16 +149,24 @@ func callbackTemplate() (*tasktemplate.TaskTemplate, error) {
 		TitleFormat: "callback",
 		Steps: map[string]*step.Step{
 			"createCb": {
-				Action: executor.Executor{
-					Type:          "callback",
-					Configuration: json.RawMessage(`{"action": "create", "schema": ` + string(jsonSchema) + `}`),
+				DBModel: step.DBModel{
+					StepData: step.EncryptedStepData{
+						Action: executor.Executor{
+							Type:          "callback",
+							Configuration: json.RawMessage(`{"action": "create", "schema": ` + string(jsonSchema) + `}`),
+						},
+					},
 				},
 			},
 			"waitCb": {
-				Dependencies: []string{"createCb"},
-				Action: executor.Executor{
-					Type:          "callback",
-					Configuration: json.RawMessage(`{"action": "wait", "id": "{{.step.createCb.output.id}}"}`),
+				DBModel: step.DBModel{
+					StepData: step.EncryptedStepData{
+						Dependencies: []string{"createCb"},
+						Action: executor.Executor{
+							Type:          "callback",
+							Configuration: json.RawMessage(`{"action": "wait", "id": "{{.step.createCb.output.id}}"}`),
+						},
+					},
 				},
 			},
 		},

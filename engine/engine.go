@@ -787,19 +787,23 @@ func expandStep(s *step.Step, res *resolution.Resolution) {
 		}
 
 		res.Steps[childStepName] = &step.Step{
-			Name:         childStepName,
-			Description:  fmt.Sprintf("%d - %s", i, s.Description),
-			Idempotent:   s.Idempotent,
-			Action:       s.Action,
-			Schema:       s.Schema,
-			State:        step.StateTODO,
-			RetryPattern: s.RetryPattern,
-			MaxRetries:   s.MaxRetries,
-			Dependencies: dependencies,
-			CustomStates: customStates,
-			Conditions:   conditions,
-			Resources:    resources,
-			Item:         item,
+			DBModel: step.DBModel{
+				StepData: step.EncryptedStepData{
+					Schema:       s.Schema,
+					RetryPattern: s.RetryPattern,
+					Dependencies: dependencies,
+					CustomStates: customStates,
+					Resources:    resources,
+					Item:         item,
+					Conditions:   conditions,
+					Action:       s.Action,
+				},
+				Name:        childStepName,
+				Description: fmt.Sprintf("%d - %s", i, s.Description),
+				Idempotent:  s.Idempotent,
+				State:       step.StateTODO,
+				MaxRetries:  s.MaxRetries,
+			},
 		}
 
 		if s.ForEachStrategy == step.ForEachStrategySequence {

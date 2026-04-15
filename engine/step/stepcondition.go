@@ -5,6 +5,7 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/ovh/utask/engine/step/condition"
+	"github.com/ovh/utask/models/step"
 	"github.com/ovh/utask/pkg/utils"
 )
 
@@ -42,12 +43,12 @@ func ValidCondition(sc *condition.Condition, stepName string, steps map[string]*
 			return errors.BadRequestf("Step condition cannot impact the state of step %s, only those who belong to the dependency chain are allowed", thenStep)
 		}
 
-		customStates, err := impactedStep.GetCustomStates()
+		customStates, err := GetCustomStates(impactedStep)
 		if err != nil {
 			return fmt.Errorf("invalid custom stats found for step %s: %s", stepName, err)
 		}
 
-		validStates := utils.AppendUniq(stepConditionValidStates, customStates...)
+		validStates := utils.AppendUniq(step.StepConditionValidStates, customStates...)
 		if !utils.ListContainsString(validStates, thenState) {
 			return errors.BadRequestf("Step condition implies invalid state for step %s: %s", thenStep, thenState)
 		}

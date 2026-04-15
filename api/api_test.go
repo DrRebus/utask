@@ -667,11 +667,15 @@ func templateWithPasswordInput() tasktemplate.TaskTemplate {
 		},
 		Steps: map[string]*step.Step{
 			"stepOne": {
-				Action: executor.Executor{
-					Type: "echo",
-					Configuration: json.RawMessage(`{
-						"output": {"showSecret":"{{.input.verysecret}}"}
-					}`),
+				DBModel: step.DBModel{
+					StepData: step.EncryptedStepData{
+						Action: executor.Executor{
+							Type: "echo",
+							Configuration: json.RawMessage(`{
+								"output": {"showSecret":"{{.input.verysecret}}"}
+							}`),
+						},
+					},
 				},
 			},
 		},
@@ -707,34 +711,42 @@ func resolverInputTemplate() tasktemplate.TaskTemplate {
 		},
 		Steps: map[string]*step.Step{
 			"step1": {
-				Action: executor.Executor{
-					Type: "echo",
-					Configuration: json.RawMessage(`{
-						"output": {"foo":"bar"}
-					}`),
+				DBModel: step.DBModel{
+					StepData: step.EncryptedStepData{
+						Action: executor.Executor{
+							Type: "echo",
+							Configuration: json.RawMessage(`{
+								"output": {"foo":"bar"}
+							}`),
+						},
+					},
 				},
 			},
 			"step2": {
-				Action: executor.Executor{
-					Type: "echo",
-					Configuration: json.RawMessage(`{
-						"output": {"foo":"bar"}
-					}`),
-				},
-				Dependencies: []string{"step1"},
-				Conditions: []*condition.Condition{
-					{
-						If: []*condition.Assert{
+				DBModel: step.DBModel{
+					StepData: step.EncryptedStepData{
+						Dependencies: []string{"step1"},
+						Action: executor.Executor{
+							Type: "echo",
+							Configuration: json.RawMessage(`{
+								"output": {"foo":"bar"}
+							}`),
+						},
+						Conditions: []*condition.Condition{
 							{
-								Expected: "foo",
-								Value:    "{{.resolver_input.ri1}}",
-								Operator: "EQ",
+								If: []*condition.Assert{
+									{
+										Expected: "foo",
+										Value:    "{{.resolver_input.ri1}}",
+										Operator: "EQ",
+									},
+								},
+								Then: map[string]string{
+									"this": "CLIENT_ERROR",
+								},
+								Type: "skip",
 							},
 						},
-						Then: map[string]string{
-							"this": "CLIENT_ERROR",
-						},
-						Type: "skip",
 					},
 				},
 			},
@@ -754,11 +766,15 @@ func dummyTemplate() tasktemplate.TaskTemplate {
 		},
 		Steps: map[string]*step.Step{
 			"step": {
-				Action: executor.Executor{
-					Type: "echo",
-					Configuration: json.RawMessage(`{
-						"output": {"foo":"bar"}
-					}`),
+				DBModel: step.DBModel{
+					StepData: step.EncryptedStepData{
+						Action: executor.Executor{
+							Type: "echo",
+							Configuration: json.RawMessage(`{
+								"output": {"foo":"bar"}
+							}`),
+						},
+					},
 				},
 			},
 		},

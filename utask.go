@@ -139,6 +139,7 @@ type Cfg struct {
 	DashboardSentryDSN                         string                   `json:"dashboard_sentry_dsn"`
 	StepsCompressionAlg                        string                   `json:"steps_compression_algorithm"`
 	ServerOptions                              ServerOpt                `json:"server_options"`
+	UseStepTable                               bool                     `json:"use_step_table"`
 
 	resourceSemaphores map[string]*semaphore.Weighted
 	executionSemaphore *semaphore.Weighted

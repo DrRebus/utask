@@ -295,12 +295,12 @@ func UpdateResolution(c *gin.Context, in *updateResolutionIn) error {
 
 		// valid and normalize steps
 		for name, st := range r.Steps {
-			if err := st.ValidAndNormalize(name, tt.BaseConfigurations, r.Steps); err != nil {
+			if err := step.ValidAndNormalize(st, name, tt.BaseConfigurations, r.Steps); err != nil {
 				_ = dbp.Rollback()
 				return errors.NewNotValid(err, fmt.Sprintf("invalid step %s", name))
 			}
 
-			valid, err := st.CheckIfValidState()
+			valid, err := step.CheckIfValidState(st)
 			if err != nil {
 				_ = dbp.Rollback()
 				return err
@@ -794,12 +794,12 @@ func UpdateResolutionStep(c *gin.Context, in *updateResolutionStepIn) error {
 
 	r.Steps[in.StepName] = &in.Step
 
-	if err := r.Steps[in.StepName].ValidAndNormalize(in.StepName, tt.BaseConfigurations, r.Steps); err != nil {
+	if err := step.ValidAndNormalize(r.Steps[in.StepName], in.StepName, tt.BaseConfigurations, r.Steps); err != nil {
 		dbp.Rollback()
 		return err
 	}
 
-	valid, err := r.Steps[in.StepName].CheckIfValidState()
+	valid, err := step.CheckIfValidState(r.Steps[in.StepName])
 	if err != nil {
 		_ = dbp.Rollback()
 		return err
@@ -899,7 +899,7 @@ func UpdateResolutionStepState(c *gin.Context, in *updateResolutionStepStateIn) 
 	oldState := s.State
 	s.State = in.State
 
-	valid, err := s.CheckIfValidState()
+	valid, err := step.CheckIfValidState(s)
 	if err != nil {
 		dbp.Rollback()
 		return err

@@ -263,7 +263,7 @@ func TestFunctionCustomState(t *testing.T) {
 		"value": "Hello world!",
 	}, res.Steps["stepOne"].Output)
 
-	customStates, err := res.Steps["stepOne"].GetCustomStates()
+	customStates, err := step.GetCustomStates(res.Steps["stepOne"])
 	require.Nil(t, err)
 	assert.Equal(t, []string{"STATE_HELLO"}, customStates)
 }
