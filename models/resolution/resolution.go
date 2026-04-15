@@ -89,6 +89,7 @@ type DBModel struct {
 	EncryptedInput      []byte `json:"-" db:"encrypted_resolver_input"`
 	EncryptedSteps      []byte `json:"-" db:"encrypted_steps"`       // encrypted Steps map
 	StepsCompressionAlg string `json:"-" db:"steps_compression_alg"` // compression algorithm used
+	UsesStepTable       bool   `json:"-" db:"uses_step_table"`
 
 	BaseConfigurations map[string]json.RawMessage `json:"base_configurations" db:"base_configurations"`
 }

@@ -101,6 +101,7 @@ CREATE TABLE "resolution" (
     encrypted_resolver_input BYTEA,
     encrypted_steps BYTEA NOT NULL,
     steps_compression_alg TEXT NOT NULL DEFAULT '',
+    uses_step_table BOOLEAN NOT NULL DEFAULT FALSE,
     base_configurations JSONB NOT NULL
 );
 

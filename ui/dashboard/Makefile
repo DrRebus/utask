@@ -12,6 +12,7 @@ DIR_NODEMODULES=node_modules
 
 BASEHREF ?= /
 PORT ?= 5558
+HOST ?= localhost
 
 all: debug clean install build
 
@@ -20,7 +21,7 @@ clean:
 	$(DEL) $(DIST_DIR)
 	$(DEL) $(DIST_TAR)
 
-debug: 
+debug:
 	$(NPM) -v
 	$(NODE) -v
 	$(ECHO) "-=DEBUG=-"
@@ -30,7 +31,7 @@ install:
 
 dev:
 	$(NODE) scripts/prebuild-env-dev.js
-	$(NG) serve --port $(PORT) --verbose=false
+	$(NG) serve --port $(PORT) --host $(HOST) --verbose=false
 
 build: install
 	$(NODE) scripts/prebuild-env-dev.js
